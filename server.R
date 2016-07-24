@@ -1,1985 +1,1040 @@
 shinyServer(function(input, output, session) {
 
-    source("classes.R")
-    source("hzTest.R")
-    source("roystonTest.R")
-    source("mardiaTest.R")
-    source("mvnPlot.R")
-    source("dhTest.R")
-    source("outlier.R")
-    source("uniPlot.R")
-    source("uniNorm.R")
-    library("mvoutlier")
-    library("nortest")
-    library("robustbase")
-    library("asbio")
-    library("moments")
-    library("MASS")
-    library("shiny")
-    library("plyr")
-    library("MVN")
-    library("psych")
-    library("ggplot2")
-    source("perspControl.R")
-    source("contourControl.R")
+library("DT")
+library("survival")
+library("KMsurv")
+library("survMisc")
+source("lifeTables.R")
+source("kaplanMeier.R")
+source("coxRegression.R")
+source("getDescriptiveResultsCoxRegression.R")
+source("stepwise.R")
+
+
+   dataM <- reactive({  ## Data input.
+       if(input$dataInput==1){  ## Load example data.
+           
+           if(input$sampleData == 1){
+           
+                data <- read.table("hmohiv.txt", header=TRUE, sep = "\t")
+          
+                data$time <- as.numeric(data$time)
+           }
+           
+           else if(input$sampleData == 2){
+               
+               data <- read.table("Rossi.txt", header=TRUE, sep = "\t")
+
+           }
+       }
+       
+       else if(input$dataInput==2){  ## Upload data.
+           
+           inFile <- input$upload
+           
+           mySep <- switch(input$fileSepDF, '1'=",",'2'="\t",'3'=";", '4'="")
+           
+           if (is.null(input$upload))  {return(NULL)}
+           
+           if (file.info(inFile$datapath)$size <= 10485800){
+               data <- read.table(inFile$datapath, sep=mySep, header=TRUE, fill=TRUE, na.strings = c("", "NA","."))
+           }
+           
+           else print("File is bigger than 10MB and will not be uploaded.")
+           
+       }
+
+       ind = complete.cases(data)
+       return(data[ind,])
+
+       #else {
+       #    data[,dim(data)[2]] = as.factor(data[,dim(data)[2]])
+       #    ind = complete.cases(data)
+       #    return(data[ind,])
+       #}
+   })
+   
+   
+   output$dataUpload <- DT::renderDataTable({
+       
+       datatable(dataM(), extensions = 'ColReorder', options = list(colReorder = TRUE))
+       
+   })
+   
+   
+   
+   ################################ Observe Life Table (start) ###############################
+   
+   # observe({
+   #    updateSelectInput(session, "statusVariable", choices = colnames(dataM()), selected = colnames(dataM())[4])
+   #})
+   
+   observe({
+       updateSelectInput(session, "survivalTime", choices = colnames(dataM()), selected = colnames(dataM())[1])
+   })
+   
+   observe({
+       
+       if(input$factorVar){
+       updateSelectInput(session, "factor", choices = colnames(dataM()), selected = colnames(dataM())[3])
+       }else{
+           
+        updateSelectInput(session, "factor", choices = NULL, selected = NULL)
+       }
+   })
+   
+   
+   statusVarLT <- reactive({return(input$statusVariable)})
+   
+   
+   observe({
+       data_tmp <- dataM()
+       if (!is.null(data_tmp)){
+           updateSelectInput(session = session, inputId = "statusVariable",
+           choices = colnames(data_tmp), selected = colnames(data_tmp)[4])
+       } else {
+           updateSelectInput(session = session, inputId = "statusVariable",
+           choices = "", selected = "")
+       }
+   })
+   
+   observe({
+       data_tmp <- dataM()
+       if (!is.null(data_tmp)){
+           idx <- which(colnames(data_tmp) %in% statusVarLT())
+           categories <- levels(as.factor(as.character(data_tmp[ ,idx])))
+           
+           updateSelectizeInput(session = session, inputId = "status", choices = categories,
+           selected = categories[2])
+       } else {
+           updateSelectizeInput(session = session, inputId = "status", choices = "",
+           selected = "")
+       }
+   })
+   
+
+   
+ ################################ Observe Life Table (end) ###############################
+ #########################################################################################
+ ################################ Observe Kaplan-Meier (start) ###########################
+ observe({
+     updateSelectInput(session, "statusVariableKM", choices = colnames(dataM()), selected = colnames(dataM())[4])
+ })
+ 
+ observe({
+     updateSelectInput(session, "survivalTimeKM", choices = colnames(dataM()), selected = colnames(dataM())[1])
+ })
+ 
+ observe({
      
-
-    
-    observe({
-		if (input$clearText_button == 0) return()
-		isolate({ updateTextInput(session, "myData", label = ",", value = "") })
-	})
-	
-
-	
-	dataM <- reactive({  ## Data input.
-		if(input$dataInput==1){  ## Load example data.
-            
-            if(input$sampleData==1){
-				data <- read.table("bivariate.txt", header=TRUE)
-            }
-			
-			else if(input$sampleData==2){
-
-                data <- iris[1:50,1:2]
-            }
-			
-			else if(input$sampleData==3){
-				data <- iris[,-4]
-			}
-		} 
-		
-		else if(input$dataInput==2){  ## Upload data.
-			
-            inFile <- input$upload
-
-            mySep <- switch(input$fileSepDF, '1'=",",'2'="\t",'3'=";", '4'="")
-            
-			if (is.null(input$upload))  {return(NULL)}
-						
-            if (file.info(inFile$datapath)$size <= 10485800){
-				data <- read.table(inFile$datapath, sep=mySep, header=TRUE, fill=TRUE, na.strings = c("", "NA","."))
-			}
-            
-            else print("File is bigger than 10MB and will not be uploaded.")
-            
-		} 
-		
-		else {  ## Paste data.
-			if(is.null(input$myData)) {return(NULL)}
-            
-			
-			tmp <- matrix(strsplit(input$myData, "\n")[[1]])
-			mySep <- switch(input$fileSepP, '1'=",",'2'="\t",'3'=";")
-			myColnames <- strsplit(tmp[1], mySep)[[1]]
-			data <- matrix(0, length(tmp)-1, length(myColnames))
-			colnames(data) <- myColnames
-            
-			for(i in 2:length(tmp)){
-				myRow <- as.numeric(strsplit(paste(tmp[i],mySep,mySep,sep=""), mySep)[[1]])
-				data[i-1,] <- myRow[-length(myRow)]
-			}
-			
-            data <- data.frame(data)
-		}
-        
-        {if (input$firstLast == 0){
-            ind = complete.cases(data)
-            return(data[ind,])
-        }
-        
-        else if (input$firstLast == 1){
-            data[,1] = as.factor(data[,1])
-            ind = complete.cases(data)
-            return(data[ind,])
-        }
-        
-        else {
-            data[,dim(data)[2]] = as.factor(data[,dim(data)[2]])
-            ind = complete.cases(data)
-            return(data[ind,])
-        }}
-	})
-
-
-	
-    heightSize <- reactive(input$myHeight)
-	widthSize <- reactive(input$myWidth)
-    
-    heightsize <- reactive(input$myheight)
-	widthsize <- reactive(input$mywidth)
-    
-    heightSizeUni <- reactive(input$myheightUni)
-	widthSizeUni <- reactive(input$mywidthUni)
-    
-    
-     observe({
+     if(input$factorVarKM){
+         updateSelectInput(session, "factorKM", choices = colnames(dataM()), selected = colnames(dataM())[3])
+     }else{
+         
+         updateSelectInput(session, "factoKMr", choices = NULL, selected = NULL)
+     }
+ })
  
-        if(input$persOpt){
-           updateCheckboxInput(session, "defaultPersp", label = "Default", FALSE)
-        }
-        
-    })
-    
-    
-    observe({
-        
-        if(input$defaultPersp){
-            updateCheckboxInput(session, "persOpt", label = "Advanced", FALSE)
-        }
-        
-    })
-    
-    
-    
-    observe({
-        
-        if(input$conOpt){
-            updateCheckboxInput(session, "defaultCon", label = "Default", FALSE)
-        }
-        
-    })
-    
-    
-    observe({
-        
-        if(input$defaultCon){
-            updateCheckboxInput(session, "conOpt", label = "Advanced", FALSE)
-        }
-        
-    })
-    
-    
-    
-    observe({
-        if (input$firstLast == 1){
-            updateSelectInput(session, "subset", choices = levels(dataM()[,1]), selected = levels(dataM()[,1])[1])
-        }
-        
-        else if(input$firstLast == 2){  ## Last column is "Group" variable.
-            
-            updateSelectInput(session, "subset", choices = levels(dataM()[,dim(dataM())[2]]), selected = levels(dataM()[,dim(dataM())[2]])[1])
-            
-        }
-        
-	})
-    
-    
-    
-    observe({
-        if (input$firstLast == 1){
-            updateSelectInput(session, "subsetUni", choices = levels(dataM()[,1]), selected = levels(dataM()[,1])[1])
-        }
-        
-        else if(input$firstLast == 2){  ## Last column is "Group" variable.
-            
-            updateSelectInput(session, "subsetUni", choices = levels(dataM()[,dim(dataM())[2]]), selected = levels(dataM()[,dim(dataM())[2]])[1])
-            
-        }
-        
-	})
-    
-    
-    observe({
-        if (input$firstLast == 1){
-            updateSelectInput(session, "subsetOut", choices = levels(dataM()[,1]), selected = levels(dataM()[,1])[1])
-        }
-        
-        else if(input$firstLast == 2){  ## Last column is "Group" variable.
-            
-            updateSelectInput(session, "subsetOut", choices = levels(dataM()[,dim(dataM())[2]]), selected = levels(dataM()[,dim(dataM())[2]])[1])
-            
-        }
-        
-	})
-    
-    
-    
-    
-    
-    
-    
-    output$uniTest <- renderPrint({
-        
-        if(input$firstLast==0){   ## Single group MVN test
-    
-         uniNorm(dataM(), type = input$normTest)
-          
-        }
-        
-        else if (input$firstLast == 1){  ## First column is "Group" variable.
-            
-                dataset <- dataM()
-                dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-                subNames = names(dataset.split)
-                ind.sub = which(names(dataset.split) == input$subsetUni)
-                
-                uniNorm(dataset.split[[ind.sub]],type = input$normTest)
-            
-        }
-        
-        else if(input$firstLast == 2){  ## Last column is "Group" variable.
-            
-                dataset <- dataM()
-                ind.last = dim(dataset)[2]
-                dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                subNames = names(dataset.split)
-                ind.sub = which(names(dataset.split) == input$subsetUni)
-                
-                uniNorm(dataset.split[[ind.sub]],type = input$normTest)
-                
-  
-        }
-    })
-    
-    
-    
-    
-    
-    output$uniPlot <- renderPlot({
-        
-        if(input$firstLast==0){   ## Single group MVN test
-            
-            uniPlot(dataM(), type = input$normPlot, pch = 16)
+ statusVarKM <- reactive({return(input$statusVariableKM)})
+ 
+ 
+ observe({
+     data_tmp <- dataM()
+     if (!is.null(data_tmp)){
+         updateSelectInput(session = session, inputId = "statusVariableKM",
+         choices = colnames(data_tmp), selected = colnames(data_tmp)[4])
+     } else {
+         updateSelectInput(session = session, inputId = "statusVariableKM",
+         choices = "", selected = "")
+     }
+ })
+ 
+ observe({
+     data_tmp <- dataM()
+     if (!is.null(data_tmp)){
+         idx <- which(colnames(data_tmp) %in% statusVarKM())
+         categories <- levels(as.factor(as.character(data_tmp[ ,idx])))
+         
+         updateSelectizeInput(session = session, inputId = "statusKM", choices = categories,
+         selected = categories[2])
+     } else {
+         updateSelectizeInput(session = session, inputId = "statusKM", choices = "",
+         selected = "")
+     }
+ })
+ 
 
 
-        }
-        
-        else if (input$firstLast == 1){  ## First column is "Group" variable.
-            
-            dataset <- dataM()
-            dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subsetUni)
-            
-            uniPlot(dataset.split[[ind.sub]],type = input$normPlot, pch = 16)
-            
-            
-        }
-        
-        else if(input$firstLast == 2){  ## Last column is "Group" variable.
-            
-            dataset <- dataM()
-            ind.last = dim(dataset)[2]
-            dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subsetUni)
-            
-            uniPlot(dataset.split[[ind.sub]],type = input$normPlot, pch = 16)
-            
-        }
-    },  height = heightSizeUni, width = widthSizeUni)
-    
-    
-    
-    output$downloadNormTest <- downloadHandler(
-    filename <- function() { paste("Univariate test.txt") },
-    content <- function(file) {
-        
-        
-        if(input$firstLast==0){   ## Single group MVN test
-            
-            result <- uniNorm(dataM(), type = input$normTest)
-            out <- capture.output(result)
-            write.table(out, file, row.names=F, col.names=F, quote=F)
-            
-        }
-        
-        else if (input$firstLast == 1){  ## First column is "Group" variable.
-            
-            dataset <- dataM()
-            dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subsetUni)
-            
-            result <- uniNorm(dataset.split[[ind.sub]],type = input$normTest)
-            
-            out <- capture.output(result)
-            write.table(out, file, row.names=F, col.names=F, quote=F)
-            
-        }
-        
-        else if(input$firstLast == 2){  ## Last column is "Group" variable.
-            
-            dataset <- dataM()
-            ind.last = dim(dataset)[2]
-            dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subsetUni)
-            
-            result <- uniNorm(dataset.split[[ind.sub]],type = input$normTest)
-            
-            out <- capture.output(result)
-            write.table(out, file, row.names=F, col.names=F, quote=F)
-            
-            
-        }
+ ################################ Observe Kaplan-Meier (end) ###########################
+ #########################################################################################
+ #########################################################################################
+ ################################ Observe Cox Regression (start) ###########################
+ observe({
+     updateSelectInput(session, "survivalTimeCox", choices = colnames(dataM()), selected = colnames(dataM())[1])
+ })
 
-    
-    })
-    
-    
-        
-    
-    
-    output$downloadNormPlot <- downloadHandler(
-    filename <- function() { paste('Univariate plot.pdf') },
-    content <- function(file) {
-        pdf(file, width = input$myWidthUni/72, height = input$myheightUni/72)
-        
-        
-        if(input$firstLast==0){   ## Single group MVN test
-            
-            uniPlot(dataM(), type = input$normPlot, pch = 16)
-            
-        }
-        
-        else if (input$firstLast == 1){  ## First column is "Group" variable.
-            
-            dataset <- dataM()
-            dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subsetUni)
-            
-            uniPlot(dataset.split[[ind.sub]],type = input$normPlot, pch = 16)
-            
-            
-        }
-        
-        else if(input$firstLast == 2){  ## Last column is "Group" variable.
-            
-            dataset <- dataM()
-            ind.last = dim(dataset)[2]
-            dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subsetUni)
-            
-            uniPlot(dataset.split[[ind.sub]],type = input$normPlot, pch = 16)
-            
-            
-            
-        }
-    
-    dev.off()
-    
-    },
-    contentType = 'application/pdf'
-    )
-    
-    
+ observe({
+     updateSelectInput(session, "statusVariableCox", choices = colnames(dataM()), selected = colnames(dataM())[2])
+ })
+ 
+ statusVar <- reactive({return(input$statusVariableCox)})
 
+ 
+ observe({
+     data_tmp <- dataM()
+     if (!is.null(data_tmp)){
+         updateSelectInput(session = session, inputId = "statusVariableCox",
+         choices = colnames(data_tmp), selected = colnames(data_tmp)[2])
+     } else {
+         updateSelectInput(session = session, inputId = "statusVariableCox",
+         choices = "", selected = "")
+     }
+ })
+ 
+ observe({
+     data_tmp <- dataM()
+     if (!is.null(data_tmp)){
+         idx <- which(colnames(data_tmp) %in% statusVar())
+         categories <- levels(as.factor(as.character(data_tmp[ ,idx])))
+         
+         updateSelectizeInput(session = session, inputId = "statusCox", choices = categories,
+         selected = categories[2])
+     } else {
+         updateSelectizeInput(session = session, inputId = "statusCox", choices = "",
+         selected = "")
+     }
+ })
+ 
+ 
+ 
+ # observe({
+  #   updateSelectInput(session, "statusCox", choices = statusVar(), selected = statusVar()[2])
+ #})
+ 
+
+observe({
+    updateSelectInput(session, "categoricalInput", choices = colnames(dataM()), selected = colnames(dataM())[5])
+})
+
+observe({
+    updateSelectInput(session, "continuousInput", choices = colnames(dataM()), selected = colnames(dataM())[4])
+})
+
+ ################################ Observe Cox Regression (end) #########################
+ #######################################################################################
+ ###################### Life Table (start) #############################################
+ 
+ output$descriptivesText <- renderText({
+     if (input$run && input$caseSummary){
+         'Table 1: Descriptives'
+     }
+ })
+ 
+ output$lifeTableText <- renderText({
+     if (input$run && input$lifeTable){
+         'Table 2: Life Table'
+     }
+ })
+ 
+ 
+ output$medianLifeTimeText <- renderText({
+     if (input$run && input$medianLifeTime){
+         'Table 3: Median Life Time'
+     }
+ })
+ 
+ 
+ output$hrText <- renderText({
+     if (input$run && input$hr){
+         'Table 4: Hazard Ratio'
+     }
+ })
+ 
+ output$compTestText <- renderText({
+     if (input$run && input$compTest && input$factorVar){
+         'Table 5: Comparison Test'
+     }
+ })
+ 
+ 
+ result <- reactive({
+ 
+  if(input$run){
+    dataSet = dataM()
     
-  output$MVN <- renderPrint({
-  
-    if(input$firstLast==0){   ## Single group MVN test
-	
-        if(input$testType=='0'){
-			dataset <- dataM()
-			mardiaTest(dataset, qqplot=FALSE)
-        } 
-		
-		else if(input$testType=='1'){
-            dataset <- dataM()
-            hzTest(dataset, qqplot=FALSE)
-        } 
-		
-		else if(input$testType=='2'){
-            dataset <- dataM()
-            roystonTest(dataset, qqplot=FALSE)
-        }
-		
-		else if(input$testType=='3'){
-            dataset <- dataM()
-            dhTest(dataset, qqplot=FALSE)
-        }
+    
+        if(input$factorVar){
+            
+            fctr = input$factor
+        }else{fctr = NULL}
+        
+ 
+        lt = lifeTables(survivalTime = input$survivalTime, statusVariable = input$statusVariable, status = input$status, factors= fctr, fromTime = input$from, toTime = input$to, by = input$by, lifeTable = input$lifeTable, descriptives = input$caseSummary, hr = input$hr, medianLifeTime = input$medianLifeTime, ci = input$ci,
+            varianceEstimation = input$varianceEstimation, compare = input$compTest, comparisonTest = input$comparisonTest, confidenceLevel = input$confidenceLevel,
+        referenceCategory = input$refCategory, typeOfTest = "asymptotic", data = dataSet)
+    
+    
+    lt
     }
-	
-	else if (input$firstLast == 1){  ## First column is "Group" variable.
-        
-		if(input$testType=='0'){
-            
-            dataset <- dataM()
-            dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            
-            dataset = dataset.split[[ind.sub]]
-           
-            mardiaTest(dataset, qqplot=FALSE)
-
-
-        } 
-		
-		else if(input$testType=='1'){
-            dataset <- dataM()
-            dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            hzTest(dataset, qqplot=FALSE)
-			
-        } 
-		
-		else if(input$testType=='2'){
-            dataset <- dataM()
-            dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            roystonTest(dataset, qqplot=FALSE)
+ 
+ })
+ 
+ 
+ descriptivesReactive <- reactive({
+ 
+ if(input$run){
+     
+     desc = result()$tableResult$caseSummary
+     
+     if(!is.null(desc)){
+         if(input$factorVar){
+             descs = do.call(rbind.data.frame, desc)
              
-        }
-		
-		else if(input$testType=='3'){
-            dataset <- dataM()
-			dataset.split = split(dataset[,-1], dataset[,1])
-			lapply(dataset.split, function(x)dhTest(x,qqplot=FALSE))
-            
-        }
-    }
-	
-	else if(input$firstLast == 2){  ## Last column is "Group" variable.
-        
-		if(input$testType=='0'){
-            dataset <- dataM()
-            ind.last = dim(dataset)[2]
-            dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            mardiaTest(dataset, qqplot=FALSE)
-			
-        } 
-		
-		else if(input$testType=='1'){
-            dataset <- dataM()
-            ind.last = dim(dataset)[2]
-            dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            hzTest(dataset, qqplot=FALSE)
-           
-        } 
-		
-		else if(input$testType=='2'){
-            dataset <- dataM()
-            ind.last = dim(dataset)[2]
-            dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            roystonTest(dataset, qqplot=FALSE)
-            
-        }
-		
-		else if(input$testType=='3'){
-            dataset <- dataM()
-			ind.last = dim(dataset)[2]
-			dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-			lapply(dataset.split, function(x)dhTest(x,qqplot=FALSE))
-            
-        } 
-    }
-  })
+         }else{
+             
+             descs = desc
+             
+         }
+     }else{descs = NULL}
+     
+     descs
+     
+ }else{descs = NULL}
+
+ 
+ 
+ })
+ 
+ 
+ output$descriptives <- DT::renderDataTable({
   
+  datatable(descriptivesReactive(), extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+  dom = 'Bfrtip',
+  buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+  ))
+
+ })
+ 
+ 
+ lifetableReactive <- reactive({
+ 
+ if(input$run){
+     ltResult = result()$testResult$lifeTable
+     
+     if(!is.null(ltResult)){
+         if(input$factorVar){
+             ltResults = do.call(rbind.data.frame, ltResult)
+             
+         }else{
+             
+             ltResults = ltResult
+             
+         }
+     }else{ltResults = NULL}
+     
+     ltResults
+ }else{ltResults = NULL}
+
+
+
+ })
+ 
+ 
+ 
+ output$lifetableResult <- DT::renderDataTable({
+     
+     datatable(lifetableReactive(), extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+  dom = 'Bfrtip',
+  buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+     ))
+     
+ })
+ 
+ medianLifeTimeReactive <- reactive({
+ 
+ if(input$run){
+     mlt = result()$tableResult$medianLifeTime
+     
+     if(!is.null(mlt)){
+         if(input$factorVar){
+             mltResults = do.call(rbind.data.frame, mlt)
+             
+         }else{
+             
+             mltResults = mlt
+             
+         }
+     }else{mltResults = NULL}
+     
+     mltResults
+ }else{mltResults = NULL}
+ 
+ 
+ 
+ })
+ 
+ 
+ output$medianLifeTimeResult <- DT::renderDataTable({
+     
+     datatable(medianLifeTimeReactive(), extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+  dom = 'Bfrtip',
+  buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+     ))
+     
+ })
+ 
+ 
+ hazardRatioReactive <- reactive({
   
-
-
-  output$mvnPLOT <- renderPlot({
-  
-    if (input$firstLast==0){  ## Single group MVN test, plot rendering..
-	
-		if (input$plotType=='0'){  ## Q-Q Plots.
-          
-			if (input$testType=='0'){
-				dataset <- dataM()
-				mardiaTest(dataset, qqplot=TRUE)
-			} 
-			
-			else if (input$testType=='1'){
-				dataset <- dataM()
-				hzTest(dataset, qqplot=TRUE)
-			} 
-			
-			else if (input$testType=='2'){
-				dataset <- dataM()
-				roystonTest(dataset, qqplot=TRUE)
-			}
-          
-			else if (input$testType=='3'){
-				dataset <- dataM()
-				dhTest(dataset, qqplot=TRUE)
-			}
-		}
-		
-		if (input$plotType=='1'){  ## Perspective Plots.
-			dataset <- dataM()
-			result <- mardiaTest(dataset, qqplot=FALSE)
-            
-            plotCtrl = perspControl(theta = input$theta, phi = input$phi, r = input$r, d = input$d, scale = input$scale,
-                            expand = input$expand, col = input$col, border = input$border, ltheta = input$ltheta, lphi = input$lphi, xlab = input$xlab,
-                            ylab = input$ylab, zlab = input$zlab, main = input$main)
-            
-            mvnPlot(result, type="persp", default = input$defaultPersp, plotCtrl = plotCtrl)
-		}
-		
-		else if (input$plotType=='2'){	## Contour plots.
-			dataset <- dataM()
-			result <- mardiaTest(dataset)
-            plotCtrl = contourControl(nlevels = input$nlevels, xlab = input$xlabCon, ylab = input$ylabCon,
-                                    labcex = input$labcex, drawlabels = input$drawlabels, method = input$methodCon, axes = input$axesCon,
-                                    col = input$colCon, lty = input$ltyCon, lwd = input$lwdCon)
-            
-            
-			mvnPlot(result, type="contour", default = input$defaultCon, plotCtrl = plotCtrl)
-		}
-	}
-
-    if (input$firstLast == 1){  ## First column is "Group" variable.
-        
-		if (input$plotType=='0'){  ## Q-Q Plots.
-              
-            if (input$testType=='0'){
-                dataset <- dataM()
-                dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-                
-                subNames = names(dataset.split)
-                ind.sub = which(names(dataset.split) == input$subset)
-                dataset = dataset.split[[ind.sub]]
-
-                mardiaTest(dataset, qqplot=TRUE)
-				
-            } 
-			
-			else if(input$testType=='1'){
-                dataset <- dataM()
-                dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-                subNames = names(dataset.split)
-                ind.sub = which(names(dataset.split) == input$subset)
-                dataset = dataset.split[[ind.sub]]
-                
-                hzTest(dataset, qqplot=TRUE)
-				
-            } 
-			
-			else if(input$testType=='2'){
-                dataset <- dataM()
-                dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-                subNames = names(dataset.split)
-                ind.sub = which(names(dataset.split) == input$subset)
-                dataset = dataset.split[[ind.sub]]
-
-                roystonTest(dataset, qqplot=TRUE)
-                
-            }
-              
-            else if(input$testType=='3'){
-                dataset <- dataM()
-				dataset.split = split(dataset[,-1], dataset[,1])
-				nrow.plot = length(dataset.split)		
-				ncol.plot = 1							
-				
-				par(mfrow=c(nrow.plot, ncol.plot))
-                lapply(dataset.split, function(x)dhTest(x, qqplot=TRUE))
-                
-            }
-		}
-		
-		if (input$plotType=='1'){  ## Perspective Plots.
-            
-            dataset <- dataM()
-            dataset.split = split(dataset[,-1], dataset[,1])
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-
-			result = hzTest(dataset, qqplot=FALSE)
-            
-            plotCtrl = perspControl(theta = input$theta, phi = input$phi, r = input$r, d = input$d, scale = input$scale,
-            expand = input$expand, col = input$col, border = input$border, ltheta = input$ltheta, lphi = input$lphi, xlab = input$xlab,
-            ylab = input$ylab, zlab = input$zlab, main = input$main)
-            
-            mvnPlot(result, type="persp", default = input$defaultPersp, plotCtrl = plotCtrl)
-		}
-		
-		else if (input$plotType=='2'){	## Contour plots.
-            dataset <- dataM()
-           dataset.split = split(dataset[,-1], dataset[,1])
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            
-			result = hzTest(dataset, qqplot=FALSE)
-            plotCtrl = contourControl(nlevels = input$nlevels, xlab = input$xlabCon, ylab = input$ylabCon,
-            labcex = input$labcex, drawlabels = input$drawlabels, method = input$methodCon, axes = input$axesCon,
-            col = input$colCon, lty = input$ltyCon, lwd = input$lwdCon)
-            
-            
-            mvnPlot(result, type="contour", default = input$defaultCon, plotCtrl = plotCtrl)
-		}
-		
-	}
+ if(input$run){
+     
+     hrResult = result()$testResult$hazardRatio
+     
+     if(!is.null(hrResult)){
+         if(input$factorVar){
+             hrResults = do.call(rbind.data.frame, hrResult)
+             
+         }else{
+             
+             hrResults = hrResult
+             
+         }
+     }else{hrResults = NULL}
+     
+     hrResults
+ }else{hrResults = NULL}
+ 
+ })
+ 
+ 
+ output$hazardRatioResult <- DT::renderDataTable({
     
-    if(input$firstLast == 2){	## Last column is "Group" variable.
-	
-    
-    if (input$plotType=='0'){  ## Q-Q Plots.
-        
-        if (input$testType=='0'){
-            dataset <- dataM()
-            ind.last = dim(dataset)[2]
-            dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            
-            mardiaTest(dataset, qqplot=TRUE)
-            
-        }
-        
-        else if(input$testType=='1'){
-            dataset <- dataM()
-            ind.last = dim(dataset)[2]
-            dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            
-            hzTest(dataset, qqplot=TRUE)
-            
-        }
-        
-        else if(input$testType=='2'){
-            dataset <- dataM()
-            ind.last = dim(dataset)[2]
-            dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            
-            roystonTest(dataset, qqplot=TRUE)
-            
-        }
-        
-        else if(input$testType=='3'){
-            dataset <- dataM()
-            dataset.split = split(dataset[,-1], dataset[,1])
-            nrow.plot = length(dataset.split)
-            ncol.plot = 1
-            
-            par(mfrow=c(nrow.plot, ncol.plot))
-            lapply(dataset.split, function(x)dhTest(x, qqplot=TRUE))
-            
-        }
-    }
-    
-    if (input$plotType=='1'){  ## Perspective Plots.
-        
-        dataset <- dataM()
-        ind.last = dim(dataset)[2]
-        dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-        
-        subNames = names(dataset.split)
-        ind.sub = which(names(dataset.split) == input$subset)
-        dataset = dataset.split[[ind.sub]]
-        
-        result = hzTest(dataset, qqplot=FALSE)
-        plotCtrl = perspControl(theta = input$theta, phi = input$phi, r = input$r, d = input$d, scale = input$scale,
-        expand = input$expand, col = input$col, border = input$border, ltheta = input$ltheta, lphi = input$lphi, xlab = input$xlab,
-        ylab = input$ylab, zlab = input$zlab, main = input$main)
-        
-        mvnPlot(result, type="persp", default = input$defaultPersp, plotCtrl = plotCtrl)
-    }
-    
-    else if (input$plotType=='2'){	## Contour plots.
-        dataset <- dataM()
-        ind.last = dim(dataset)[2]
-        dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-        
-        subNames = names(dataset.split)
-        ind.sub = which(names(dataset.split) == input$subset)
-        dataset = dataset.split[[ind.sub]]
-        
-        result = hzTest(dataset, qqplot=FALSE)
-        plotCtrl = contourControl(nlevels = input$nlevels, xlab = input$xlabCon, ylab = input$ylabCon,
-        labcex = input$labcex, drawlabels = input$drawlabels, method = input$methodCon, axes = input$axesCon,
-        col = input$colCon, lty = input$ltyCon, lwd = input$lwdCon)
-        
-        
-        mvnPlot(result, type="contour", default = input$defaultCon, plotCtrl = plotCtrl)
-    }
-    
-	}
-  }, height = heightSize, width = widthSize)
-
-
-
-
-
-	# 2. PDF Format
-	output$downloadPlotPDF <- downloadHandler(
-		filename <- function() { paste('MVN.pdf') },
-		content <- function(file) {
-			pdf(file, width = input$myWidth/72, height = input$myHeight/72)
-
-if (input$firstLast==0){  ## Single group MVN test, plot rendering..
-	
-    if (input$plotType=='0'){  ## Q-Q Plots.
-        
-        if (input$testType=='0'){
-            dataset <- dataM()
-            mardiaTest(dataset, qqplot=TRUE)
-        }
-        
-        else if (input$testType=='1'){
-            dataset <- dataM()
-            hzTest(dataset, qqplot=TRUE)
-        }
-        
-        else if (input$testType=='2'){
-            dataset <- dataM()
-            roystonTest(dataset, qqplot=TRUE)
-        }
-        
-        else if (input$testType=='3'){
-            dataset <- dataM()
-            dhTest(dataset, qqplot=TRUE)
-        }
-    }
-    
-    if (input$plotType=='1'){  ## Perspective Plots.
-        dataset <- dataM()
-        result <- mardiaTest(dataset, qqplot=FALSE)
-        plotCtrl = perspControl(theta = input$theta, phi = input$phi, r = input$r, d = input$d, scale = input$scale,
-        expand = input$expand, col = input$col, border = input$border, ltheta = input$ltheta, lphi = input$lphi, xlab = input$xlab,
-        ylab = input$ylab, zlab = input$zlab, main = input$main)
-        
-        mvnPlot(result, type="persp", default = input$defaultPersp, plotCtrl = plotCtrl)
-    }
-    
-    else if (input$plotType=='2'){	## Contour plots.
-        dataset <- dataM()
-        result <- mardiaTest(dataset)
-        plotCtrl = contourControl(nlevels = input$nlevels, xlab = input$xlabCon, ylab = input$ylabCon,
-        labcex = input$labcex, drawlabels = input$drawlabels, method = input$methodCon, axes = input$axesCon,
-        col = input$colCon, lty = input$ltyCon, lwd = input$lwdCon)
-        
-        
-        mvnPlot(result, type="contour", default = input$defaultCon, plotCtrl = plotCtrl)
-    }
-}
-
-if (input$firstLast == 1){  ## First column is "Group" variable.
-    
-    if (input$plotType=='0'){  ## Q-Q Plots.
-        
-        if (input$testType=='0'){
-            dataset <- dataM()
-            dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            
-            mardiaTest(dataset, qqplot=TRUE)
-            
-        }
-        
-        else if(input$testType=='1'){
-            dataset <- dataM()
-            dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            
-            hzTest(dataset, qqplot=TRUE)
-            
-        }
-        
-        else if(input$testType=='2'){
-            dataset <- dataM()
-            dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            
-            roystonTest(dataset, qqplot=TRUE)
-            
-        }
-        
-        else if(input$testType=='3'){
-            dataset <- dataM()
-            dataset.split = split(dataset[,-1], dataset[,1])
-            nrow.plot = length(dataset.split)
-            ncol.plot = 1
-            
-            par(mfrow=c(nrow.plot, ncol.plot))
-            lapply(dataset.split, function(x)dhTest(x, qqplot=TRUE))
-            
-        }
-    }
-    
-    if (input$plotType=='1'){  ## Perspective Plots.
-        
-        dataset <- dataM()
-        dataset.split = split(dataset[,-1], dataset[,1])
-        
-        subNames = names(dataset.split)
-        ind.sub = which(names(dataset.split) == input$subset)
-        dataset = dataset.split[[ind.sub]]
-        
-        result = hzTest(dataset, qqplot=FALSE)
-        plotCtrl = perspControl(theta = input$theta, phi = input$phi, r = input$r, d = input$d, scale = input$scale,
-        expand = input$expand, col = input$col, border = input$border, ltheta = input$ltheta, lphi = input$lphi, xlab = input$xlab,
-        ylab = input$ylab, zlab = input$zlab, main = input$main)
-        
-        mvnPlot(result, type="persp", default = input$defaultPersp, plotCtrl = plotCtrl)
-    }
-    
-    else if (input$plotType=='2'){	## Contour plots.
-        dataset <- dataM()
-        dataset.split = split(dataset[,-1], dataset[,1])
-        
-        subNames = names(dataset.split)
-        ind.sub = which(names(dataset.split) == input$subset)
-        dataset = dataset.split[[ind.sub]]
-        
-        result = hzTest(dataset, qqplot=FALSE)
-        plotCtrl = contourControl(nlevels = input$nlevels, xlab = input$xlabCon, ylab = input$ylabCon,
-        labcex = input$labcex, drawlabels = input$drawlabels, method = input$methodCon, axes = input$axesCon,
-        col = input$colCon, lty = input$ltyCon, lwd = input$lwdCon)
-        
-        
-        mvnPlot(result, type="contour", default = input$defaultCon, plotCtrl = plotCtrl)
-    }
-    
-}
-
-if(input$firstLast == 2){	## Last column is "Group" variable.
-	
-    
-    if (input$plotType=='0'){  ## Q-Q Plots.
-        
-        if (input$testType=='0'){
-            dataset <- dataM()
-            ind.last = dim(dataset)[2]
-            dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-            
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            
-            mardiaTest(dataset, qqplot=TRUE)
-            
-        }
-        
-        else if(input$testType=='1'){
-            dataset <- dataM()
-            ind.last = dim(dataset)[2]
-            dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            
-            hzTest(dataset, qqplot=TRUE)
-            
-        }
-        
-        else if(input$testType=='2'){
-            dataset <- dataM()
-            ind.last = dim(dataset)[2]
-            dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-            subNames = names(dataset.split)
-            ind.sub = which(names(dataset.split) == input$subset)
-            dataset = dataset.split[[ind.sub]]
-            
-            roystonTest(dataset, qqplot=TRUE)
-            
-        }
-        
-        else if(input$testType=='3'){
-            dataset <- dataM()
-            dataset.split = split(dataset[,-1], dataset[,1])
-            nrow.plot = length(dataset.split)
-            ncol.plot = 1
-            
-            par(mfrow=c(nrow.plot, ncol.plot))
-            lapply(dataset.split, function(x)dhTest(x, qqplot=TRUE))
-            
-        }
-    }
-    
-    if (input$plotType=='1'){  ## Perspective Plots.
-        
-        dataset <- dataM()
-        ind.last = dim(dataset)[2]
-        dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-        
-        subNames = names(dataset.split)
-        ind.sub = which(names(dataset.split) == input$subset)
-        dataset = dataset.split[[ind.sub]]
-        
-        result = hzTest(dataset, qqplot=FALSE)
-        plotCtrl = perspControl(theta = input$theta, phi = input$phi, r = input$r, d = input$d, scale = input$scale,
-        expand = input$expand, col = input$col, border = input$border, ltheta = input$ltheta, lphi = input$lphi, xlab = input$xlab,
-        ylab = input$ylab, zlab = input$zlab, main = input$main)
-        
-        mvnPlot(result, type="persp", default = input$defaultPersp, plotCtrl = plotCtrl)
-    }
-    
-    else if (input$plotType=='2'){	## Contour plots.
-        dataset <- dataM()
-        ind.last = dim(dataset)[2]
-        dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-        
-        subNames = names(dataset.split)
-        ind.sub = which(names(dataset.split) == input$subset)
-        dataset = dataset.split[[ind.sub]]
-        
-        result = hzTest(dataset, qqplot=FALSE)
-        plotCtrl = contourControl(nlevels = input$nlevels, xlab = input$xlabCon, ylab = input$ylabCon,
-        labcex = input$labcex, drawlabels = input$drawlabels, method = input$methodCon, axes = input$axesCon,
-        col = input$colCon, lty = input$ltyCon, lwd = input$lwdCon)
-        
-        
-        mvnPlot(result, type="contour", default = input$defaultCon, plotCtrl = plotCtrl)
-    }
-    
-}
-
-			dev.off()
-		},
-		contentType = 'application/pdf'
-	)
-
-
-
-
-    
-    ## Plot area for outlier detection tab.
-    output$outlierPLOT <- renderPlot({
+    datatable(hazardRatioReactive(), extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+ 
+ })
+ 
+ 
+ comparisonTestReactive <- reactive({
+ 
+ if(input$factorVar && input$compTest && input$run){
+     
+     compTestResult = result()$testResult$testResults
+     
+ }else{
+     
+     compTestResult = NULL
+     
+ }
+ 
+ 
+ })
+ 
+ output$comparisonTestResults <- DT::renderDataTable({
+     
+     datatable(comparisonTestReactive(), extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+  dom = 'Bfrtip',
+  buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+     ))
    
-   if (input$firstLast==0){   # Grup degiskeni yok
-       
-        if(input$outlierDetect=='1'){
-            dataset <- dataM()
-            set.seed(1)
-            outlier(dataset, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)
-        }
+ })
+ 
+ ###################### Life Table (end) #######################################################
+ ###############################################################################################
+ ###################### Kaplan-Meier (start) ###################################################
+
+
+output$descriptivesTextKM <- renderText({
+    if (input$runKM && input$caseSummaryKM){
+        'Table 1: Descriptives'
+    }
+})
+
+output$survivalTableTextKM <- renderText({
+    if (input$runKM && input$survivalTable){
+        'Table 2: Survival Table'
+    }
+})
+
+
+output$meanMedianSurvivalTimesText <- renderText({
+    if (input$runKM && input$meanMedianSurvivalTimes){
+        'Table 3: Mean and Median Life Time'
+    }
+})
+
+#output$quartilesOfSurvivalTimesText <- renderText({
+#    if (input$runKM && input$quartilesOfSurvivalTimes){
+#        'Table 4: Quartiles of Survival Times'
+#    }
+#})
+
+
+
+output$hrTextKM <- renderText({
+    if (input$runKM && input$hrKM){
+        'Table 4: Hazard Ratio'
+    }
+})
+
+output$compTestTextKM <- renderText({
+    if (input$runKM && input$compTestKM && input$factorVarKM){
+        'Table 5: Comparison Test'
+    }
+})
+
+
+resultKM <- reactive({
     
-        if(input$outlierDetect=='2'){
-            dataset <- dataM()
-            set.seed(1)
-            outlier(dataset, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)
-        }
+    if(input$runKM){
+        dataSet = dataM()
         
-        #  if(input$outlierDetect=='3'){
-        #    dataset <- dataM()
-        #    outlier(dataset, method="pcout")
+         if(input$factorVarKM){
+             
+             fctr = input$factorKM
+         }else{fctr = NULL}
+         
+            
+            km = kaplanMeier (survivalTime = input$survivalTimeKM, statusVariable  = input$statusVariableKM, status = input$statusKM, factors = fctr, survivalTable = TRUE, caseSummary = input$caseSummaryKM, hr=input$hrKM,
+            meanMedianSurvivalTimes = input$meanMedianSurvivalTimes, quartilesOfSurvivalTimes = FALSE, ci = input$ciKM,
+            varianceEstimation = input$varianceEstimationKM, comparisonTest = input$comparisonTestKM, confidenceLevel = input$confidenceLevelKM,
+            referenceCategory = input$refCategoryKM, typeOfTest = "asymptotic", data = dataSet)
+
+        
+        km
+    }
+    
+})
+
+
+descriptivesReactiveKM <- reactive({
+    
+    if(input$runKM && input$caseSummaryKM){
+        
+        desc = resultKM()$tableResult$caseSummary
+        
+        if(!is.null(desc)){
+            if(input$factorVarKM){
+                descs = do.call(rbind.data.frame, desc)
+                
+            }else{
+                
+                descs = desc
+                
+            }
+        }else{descs = NULL}
+        
+        descs
+        
+    }else{descs = NULL}
+    
+    
+    
+})
+
+
+output$descriptivesKM <- DT::renderDataTable({
+    
+    datatable(descriptivesReactiveKM(), extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+
+survivalTableReactive <- reactive({
+    
+    if(input$runKM && input$survivalTable){
+        stResult = resultKM()$testResult$survivalTable
+        
+        if(!is.null(stResult)){
+            if(input$factorVarKM){
+                stResults = do.call(rbind.data.frame, stResult)
+                
+            }else{
+                
+                stResults = stResult
+                
+            }
+        }else{stResults = NULL}
+        
+        stResults
+    }else{stResults = NULL}
+    
+    
+    
+})
+
+
+
+output$survivaltableResult <- DT::renderDataTable({
+    
+    datatable(survivalTableReactive(), extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+meanMedianSurvivalTimesReactive <- reactive({
+    
+    if(input$runKM){
+        mst = resultKM()$tableResult$meanMedianSurvivalTimes
+        
+        if(!is.null(mst)){
+            
+                mstResults = mst
+                
+        }else{mstResults = NULL}
+        
+        rownames(mstResults) = mstResults$Factor
+        mstResults[-1]
+        
+    }else{mstResults = NULL}
+    
+    
+    
+})
+
+
+output$meanMedianSurvivalTimesResult <- DT::renderDataTable({
+    
+    datatable(meanMedianSurvivalTimesReactive(), extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+
+hazardRatioReactiveKM <- reactive({
+    
+    if(input$runKM){
+        
+        hrResult = resultKM()$testResult$hazardRatio
+        
+        if(!is.null(hrResult)){
+            if(input$factorVarKM){
+                hrResults = do.call(rbind.data.frame, hrResult)
+                
+            }else{
+                
+                hrResults = hrResult
+                
+            }
+        }else{hrResults = NULL}
+        
+        hrResults
+    }else{hrResults = NULL}
+    
+})
+
+
+output$hazardRatioResultKM <- DT::renderDataTable({
+    
+    datatable(hazardRatioReactiveKM(), extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+
+comparisonTestReactiveKM <- reactive({
+    
+    if(input$factorVarKM && input$compTestKM && input$runKM){
+        
+        compTestResult = resultKM()$testResult$testResults
+        
+    }else{
+        
+        compTestResult = NULL
+        
+    }
+    
+    
+})
+
+output$comparisonTestResultsKM <- DT::renderDataTable({
+    
+    datatable(comparisonTestReactiveKM(), extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+###################### Kaplan-Meier (end) ###################################################
+#############################################################################################
+###################### Cox Regression (start) #################################################
+
+
+output$displayCoefficientEstimatesCox <- renderText({
+    if (input$runCox && input$displayCoefficientEstimates){
+        'Table 1: Coefficient Estimates'
+    }
+})
+
+output$hazardRatioCox <- renderText({
+    if (input$runCox && input$hrcox){
+        'Table 2: Hazard Ratio'
+    }
+})
+
+
+output$goodnessOfFitTestsText <- renderText({
+    if (input$runCox && input$goodnessOfFitTests){
+        'Table 3: Goodness of Fit Tests'
+    }
+})
+
+output$analysisOfDevianceCox <- renderText({
+    if (input$runCox && input$analysisOfDeviance){
+        'Table 4: Analysis of Deviance'
+    }
+})
+
+
+output$storePredictionsCox <- renderText({
+    if (input$runCox && input$storePredictions){
+        'Table 5: Predictions'
+    }
+})
+
+output$residualsCoxText <- renderText({
+    if (input$runCox && input$residuals){
+        'Table 6: Residuals'
+    }
+})
+
+output$martingaleResidualsCoxText <- renderText({
+    if (input$runCox && input$martingaleResiduals){
+        'Table 7: Martingale Residuals'
+    }
+})
+
+output$schoenfeldResidualsCoxText <- renderText({
+    if (input$runCox && input$schoenfeldResiduals){
+        'Table 8: Schoenfeld Residuals'
+    }
+})
+
+
+output$dfBetasCoxText <- renderText({
+    if (input$runCox && input$dfBetas){
+        'Table 9: DfBetas'
+    }
+})
+
+
+resultCox <- reactive({
+    
+    #if(input$runKM){
+        dataSet = dataM()
+        
+        #if(input$factorVarKM){
+            
+        #    fctr = input$factorKM
+        #}else{fctr = NULL}
+        
+        
+        cox = coxRegression(survivalTime = input$survivalTimeCox, categoricalInput = input$categoricalInput, continuousInput = input$continuousInput, statusVariable = input$statusVariableCox, status = input$statusCox, displayDescriptives = TRUE, displayCoefficientEstimates = input$displayCoefficientEstimates, displayModelFit = TRUE, hazardRatio = input$hrcox, goodnessOfFitTests = input$goodnessOfFitTests, analysisOfDeviance = input$analysisOfDeviance,ties = input$ties, confidenceLevel = input$confidenceLevelCox, alternativeHypothesis = "equalToTestValue", modelSelectionCriteria = input$modelSelectionCriteria, modelSelection = input$modelSelection, alphaEnter = input$alphaToEnter, referenceCategory = input$refCategoryCox,alphaRemove = input$alphaToRemove, storePredictions = input$storePredictions, storeResiduals = input$residuals,storeMartingaleResiduals = input$martingaleResiduals, storeSchoenfeldResiduals = input$schoenfeldResiduals, storeDfBetas = input$dfBetas,data = dataSet)
+        #,
+        #
+        #
+        #
+        #  data = dataSet)
+        
+        
+        cox
         #}
-        
-    }
-   
-   if (input$firstLast == 1){  ## First column is "Group" variable.
-       
-       
-       if(input$outlierDetect=='1'){
-           dataset <- dataM()
-           dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-           
-           subNames = names(dataset.split)
-           ind.sub = which(names(dataset.split) == input$subsetOut)
-           
-           dataset = dataset.split[[ind.sub]]
-           set.seed(1)
-           outlier(dataset, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)
-           
-       }
-       
-       if(input$outlierDetect=='2'){
-           
-           dataset <- dataM()
-           dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-           
-           subNames = names(dataset.split)
-           ind.sub = which(names(dataset.split) == input$subsetOut)
-           
-           dataset = dataset.split[[ind.sub]]
-           set.seed(1)
-           outlier(dataset, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)
-           
-       }
-       
-       if(input$outlierDetect=='3'){
-           dataset <- dataM()
-           dataset.split = split(dataset[,-1], dataset[,1])
-           nrow.plot = length(dataset.split)		
-           ncol.plot = 1							
-           par(mfrow=c(nrow.plot, ncol.plot))
-           lapply(dataset.split, function(x)outlier(x, method="pcout"))
-           
-       }
-       
-   }
 
 
-  if(input$firstLast == 2){	## Last column is "Group" variable.
-      
-      if(input$outlierDetect=='1'){
-          dataset <- dataM()
-          ind.last = dim(dataset)[2]
-          dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-          
-          subNames = names(dataset.split)
-          ind.sub = which(names(dataset.split) == input$subsetOut)
-          dataset = dataset.split[[ind.sub]]
-          set.seed(1)
-          outlier(dataset, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)
-      }
-      
-      if(input$outlierDetect=='2'){
-          dataset <- dataM()
-          ind.last = dim(dataset)[2]
-          dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-          
-          subNames = names(dataset.split)
-          ind.sub = which(names(dataset.split) == input$subsetOut)
-          dataset = dataset.split[[ind.sub]]
-          set.seed(1)
-          outlier(dataset, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)
-          
-      }
-      
-      if(input$outlierDetect=='3'){
-          dataset <- dataM()
-          ind.last = dim(dataset)[2]
-          dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-          nrow.plot = length(dataset.split)		
-          ncol.plot = 1							
-          
-          par(mfrow=c(nrow.plot, ncol.plot))
-          lapply(dataset.split, function(x)outlier(x, method="pcout"))
-          
-          
-        }
-      
-      }
-   }, height = heightsize, width = widthsize)
+})
 
 
-
-        
-    output$downloadNewData <- downloadHandler(
-    	filename = function() { "newData.txt" },
-   		content = function(file) {
-            
-            if (input$firstLast == 0){   ## Download graphs for single groups.
-                if(input$outlierDetect=='1'){
-                    dataset <- dataM()
-                    set.seed(1)
-                    new = outlier(dataset, qqplot=FALSE, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)$newData
-                    write.table(new, file, row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
-                    
-                }else
-                
-                if(input$outlierDetect=='2'){
-                    dataset <- dataM()
-                    set.seed(1)
-                    new = outlier(dataset, qqplot=FALSE, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)$newData
-                    write.table(new, file, row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
-                    
-                }else
-                
-                if(input$outlierDetect=='3'){
-                    dataset <- dataM()
-                    write.table(outlier(dataset, qqplot=FALSE, method="pcout")$newData, file, row.names=FALSE,
-                    col.names=TRUE, quote=FALSE, sep="\t")
-                }
-                
-            }
-            
-            else if (input$firstLast == 1){  ## Download graphs, first column is group variable.
-                
-                if(input$outlierDetect=='1'){
-                    dataset <- dataM()
-                    dataset.split = split(dataset[,-1], dataset[,1])
-                    quantile = lapply(dataset.split, function(x){set.seed(1)
-                        outlier(x, qqplot=FALSE, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                    outlier = list()
-                    for(i in 1:length(dataset.split)){
-                        
-                        outlier[i] = quantile[[i]][2]
-                    }
-                    names(outlier) = names(quantile)
-                    o = ldply(outlier, rbind)
-                    names(o)[1]="Group"
-                    
-                    write.table(o, file, row.names=FALSE,
-                    col.names=TRUE, quote=FALSE, sep="\t")
-                    
-                }else
-                
-                if(input$outlierDetect=='2'){
-                    dataset <- dataM()
-                    dataset.split = split(dataset[,-1], dataset[,1])
-                    adjquan = lapply(dataset.split, function(x){set.seed(1)
-                        outlier(x, qqplot=FALSE, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                    outlier = list()
-                    for(i in 1:length(dataset.split)){
-                        
-                        outlier[i] = adjquan[[i]][2]
-                    }
-                    names(outlier) = names(adjquan)
-                    o = ldply(outlier, rbind)
-                    names(o)[1]="Group"
-                    
-                    
-                    write.table(o, file, row.names=FALSE,
-                    col.names=TRUE, quote=FALSE, sep="\t")
-                    
-                }else
-                
-                if(input$outlierDetect=='3'){
-                    dataset <- dataM()
-                    dataset.split = split(dataset[,-1], dataset[,1])
-                    out = lapply(dataset.split, function(x)outlier(x, qqplot=FALSE, method="pcout"))
-                    outlier = list()
-                    for(i in 1:length(dataset.split)){
-                        
-                        outlier[i] = out[[i]][2]
-                    }
-                    names(outlier) = names(out)
-                    o = ldply(outlier, rbind)
-                    names(o)[1]="Group"
-                    
-                    
-                    write.table(o, file, row.names=FALSE,
-                    col.names=TRUE, quote=FALSE, sep="\t")
-                }
-                
-                
-            }
-            
-            else if (input$firstLast == 2){  ## outlier download, last column is group variable.
-                
-                if(input$outlierDetect=='1'){
-                    dataset <- dataM()
-                    ind.last = dim(dataset)[2]
-                    dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                    quantile = lapply(dataset.split, function(x){set.seed(1)
-                        outlier(x, qqplot=FALSE, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                    outlier = list()
-                    for(i in 1:length(dataset.split)){
-                        
-                        outlier[i] = quantile[[i]][2]
-                    }
-                    names(outlier) = names(quantile)
-                    o = ldply(outlier, rbind)
-                    names(o)[1]="Group"
-                    
-                    
-                    write.table(o, file, row.names=FALSE,
-                    col.names=TRUE, quote=FALSE, sep="\t")
-                    
-                }else
-                
-                if(input$outlierDetect=='2'){
-                    dataset <- dataM()
-                    ind.last = dim(dataset)[2]
-                    dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                    adjquan = lapply(dataset.split, function(x){set.seed(1)
-                        outlier(x, qqplot=FALSE, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                    outlier = list()
-                    for(i in 1:length(dataset.split)){
-                        
-                        outlier[i] = adjquan[[i]][2]
-                    }
-                    names(outlier) = names(adjquan)
-                    o = ldply(outlier, rbind)
-                    names(o)[1]="Group"
-                    
-                    
-                    write.table(o, file, row.names=FALSE,
-                    col.names=TRUE, quote=FALSE, sep="\t")
-                    
-                }else
-                
-                if(input$outlierDetect=='3'){
-                    dataset <- dataM()
-                    ind.last = dim(dataset)[2]
-                    dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                    out = lapply(dataset.split, function(x)outlier(x, qqplot=FALSE, method="pcout"))
-                    outlier = list()
-                    for(i in 1:length(dataset.split)){
-                        
-                        outlier[i] = out[[i]][2]
-                    }
-                    names(outlier) = names(out)
-                    o = ldply(outlier, rbind)
-                    names(o)[1]="Group"
-                    
-                    
-                    write.table(o, file, row.names=FALSE,
-                    col.names=TRUE, quote=FALSE, sep="\t")
-                }
-                
-                
-            }
-            
-            
-        })
-        
-        
-        output$downloadOutlier <- downloadHandler(
-    	filename = function() { "outlier.txt" },
-   		content = function(file) {
-            
-            if (input$firstLast == 0){   ## Download graphs for single groups.
-                if(input$outlierDetect=='1'){
-                    dataset <- dataM()
-                    set.seed(1)
-                    out = outlier(dataset, qqplot=FALSE, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)$outlier
-                    write.table(out, file, row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
-                    
-                }else
-                
-                if(input$outlierDetect=='2'){
-                    dataset <- dataM()
-                    set.seed(1)
-                    out = outlier(dataset, qqplot=FALSE, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)$outlier
-                    write.table(out, file, row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
-                    
-                }else
-                
-                if(input$outlierDetect=='3'){
-                    dataset <- dataM()
-                    write.table(outlier(dataset, qqplot=FALSE, method="pcout")$outlier, file, row.names=FALSE,
-                    col.names=TRUE, quote=FALSE, sep="\t")
-                }
-                
-            }
-            
-            else if (input$firstLast == 1){  ## Download graphs, first column is group variable.
-                
-                if(input$outlierDetect=='1'){
-                    dataset <- dataM()
-                    dataset.split = split(dataset[,-1], dataset[,1])
-                    quantile = lapply(dataset.split, function(x){set.seed(1)
-                        outlier(x, qqplot=FALSE, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                    outlier = list()
-                    for(i in 1:length(dataset.split)){
-                        
-                        outlier[i] = quantile[[i]][1]
-                    }
-                    names(outlier) = names(quantile)
-                    o = ldply(outlier, rbind)
-                    names(o)[1]="Group"
-                    
-                    
-                    write.table(o, file, row.names=FALSE,
-                    col.names=TRUE, quote=FALSE, sep="\t")
-                    
-                }else
-                
-                if(input$outlierDetect=='2'){
-                    dataset <- dataM()
-                    dataset.split = split(dataset[,-1], dataset[,1])
-                    adjquan = lapply(dataset.split, function(x){set.seed(1)
-                        outlier(x, qqplot=FALSE, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                    outlier = list()
-                    for(i in 1:length(dataset.split)){
-                        
-                        outlier[i] = adjquan[[i]][1]
-                    }
-                    names(outlier) = names(adjquan)
-                    o = ldply(outlier, rbind)
-                    names(o)[1]="Group"
-                    
-                    
-                    write.table(o, file, row.names=FALSE,
-                    col.names=TRUE, quote=FALSE, sep="\t")
-                    
-                }else
-                
-                if(input$outlierDetect=='3'){
-                    dataset <- dataM()
-                    dataset.split = split(dataset[,-1], dataset[,1])
-                    out = lapply(dataset.split, function(x)outlier(x, qqplot=FALSE, method="pcout"))
-                    outlier = list()
-                    for(i in 1:length(dataset.split)){
-                        
-                        outlier[i] = out[[i]][1]
-                    }
-                    names(outlier) = names(out)
-                    o = ldply(outlier, rbind)
-                    names(o)[1]="Group"
-                    
-                    
-                    write.table(o, file, row.names=FALSE,
-                    col.names=TRUE, quote=FALSE, sep="\t")
-                }
-                
-                
-            }
-            
-            else if (input$firstLast == 2){  ## outlier download, last column is group variable.
-                
-                if(input$outlierDetect=='1'){
-                    dataset <- dataM()
-                    ind.last = dim(dataset)[2]
-                    dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                    quantile = lapply(dataset.split, function(x){set.seed(1)
-                        outlier(x, qqplot=FALSE, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                    outlier = list()
-                    for(i in 1:length(dataset.split)){
-                        
-                        outlier[i] = quantile[[i]][1]
-                    }
-                    names(outlier) = names(quantile)
-                    o = ldply(outlier, rbind)
-                    names(o)[1]="Group"
-                    
-                    
-                    write.table(o, file, row.names=FALSE,
-                    col.names=TRUE, quote=FALSE, sep="\t")
-                    
-                }else
-                
-                if(input$outlierDetect=='2'){
-                    dataset <- dataM()
-                    ind.last = dim(dataset)[2]
-                    dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                    adjquan = lapply(dataset.split, function(x){set.seed(1)
-                        outlier(x, qqplot=FALSE, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                    outlier = list()
-                    for(i in 1:length(dataset.split)){
-                        
-                        outlier[i] = adjquan[[i]][1]
-                    }
-                    names(outlier) = names(adjquan)
-                    o = ldply(outlier, rbind)
-                    names(o)[1]="Group"
-                    
-                    
-                    write.table(o, file, row.names=FALSE,
-                    col.names=TRUE, quote=FALSE, sep="\t")
-                    
-                }else
-                
-                if(input$outlierDetect=='3'){
-                    dataset <- dataM()
-                    ind.last = dim(dataset)[2]
-                    dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                    out = lapply(dataset.split, function(x)outlier(x, qqplot=FALSE, method="pcout"))
-                    outlier = list()
-                    for(i in 1:length(dataset.split)){
-                        
-                        outlier[i] = out[[i]][1]
-                    }
-                    names(outlier) = names(out)
-                    o = ldply(outlier, rbind)
-                    names(o)[1]="Group"
-                    
-                    
-                    write.table(o, file, row.names=FALSE,
-                    col.names=TRUE, quote=FALSE, sep="\t")
-                }
-                
-                
-            }
-            
-            
-            
-        })
-        
-        
-        
-    output$downloadOutlierPlot <- downloadHandler(
-            filename <- function() { paste('outlier.pdf') },
-            content <- function(file) {
-			pdf(file, width = input$mywidth/72, height = input$myheight/72)
-            
-            if (input$firstLast==0){   # Grup degiskeni yok
-                
-                if(input$outlierDetect=='1'){
-                    dataset <- dataM()
-                    set.seed(1)
-                    outlier(dataset, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)
-                }
-                
-                if(input$outlierDetect=='2'){
-                    dataset <- dataM()
-                    set.seed(1)
-                    outlier(dataset, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)
-                }
-                
-                if(input$outlierDetect=='3'){
-                    dataset <- dataM()
-                    outlier(dataset, method="pcout")
-                }
-                
-            }
-            
-            if (input$firstLast == 1){  ## First column is "Group" variable.
-                
-                
-                if(input$outlierDetect=='1'){
-                    dataset <- dataM()
-                    dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-                    
-                    subNames = names(dataset.split)
-                    ind.sub = which(names(dataset.split) == input$subsetOut)
-                    
-                    dataset = dataset.split[[ind.sub]]
-                    set.seed(1)
-                    outlier(dataset, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)
-                    
-                }
-                
-                if(input$outlierDetect=='2'){
-                    
-                    dataset <- dataM()
-                    dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-                    
-                    subNames = names(dataset.split)
-                    ind.sub = which(names(dataset.split) == input$subsetOut)
-                    
-                    dataset = dataset.split[[ind.sub]]
-                    set.seed(1)
-                    outlier(dataset, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)
-                    
-                }
-                
-                if(input$outlierDetect=='3'){
-                    dataset <- dataM()
-                    dataset.split = split(dataset[,-1], dataset[,1])
-                    nrow.plot = length(dataset.split)
-                    ncol.plot = 1
-                    par(mfrow=c(nrow.plot, ncol.plot))
-                    lapply(dataset.split, function(x)outlier(x, method="pcout"))
-                    
-                }
-                
-            }
-            
-            
-            if(input$firstLast == 2){	## Last column is "Group" variable.
-                
-                if(input$outlierDetect=='1'){
-                    dataset <- dataM()
-                    ind.last = dim(dataset)[2]
-                    dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                    
-                    subNames = names(dataset.split)
-                    ind.sub = which(names(dataset.split) == input$subsetOut)
-                    dataset = dataset.split[[ind.sub]]
-                    set.seed(1)
-                    outlier(dataset, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)
-                }
-                
-                if(input$outlierDetect=='2'){
-                    dataset <- dataM()
-                    ind.last = dim(dataset)[2]
-                    dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                    
-                    subNames = names(dataset.split)
-                    ind.sub = which(names(dataset.split) == input$subsetOut)
-                    dataset = dataset.split[[ind.sub]]
-                    set.seed(1)
-                    outlier(dataset, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)
-                    
-                }
-                
-                if(input$outlierDetect=='3'){
-                    dataset <- dataM()
-                    ind.last = dim(dataset)[2]
-                    dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                    nrow.plot = length(dataset.split)		
-                    ncol.plot = 1							
-                    
-                    par(mfrow=c(nrow.plot, ncol.plot))
-                    lapply(dataset.split, function(x)outlier(x, method="pcout"))
-                    
-                    
-                }
-                
-            }
-            
-            
-			dev.off()
-		},
-		contentType = 'application/pdf'
-        )
-        
-        
-        output$downloadMVNresult <- downloadHandler(
-		filename <- function() { paste("result.txt") },
-		content <- function(file) {
-            
-             if (input$firstLast == 0){   ## Download graphs for single groups.
-                 
-                if(input$testType=='0'){
-                    
-                    result <- mardiaTest(dataM())
-                    out <- capture.output(result)
-   
-                } else
-                
-                if(input$testType=='1'){
+#descriptivesReactiveCox <- reactive({
     
-                    result <- hzTest(dataM())
-                      out<-capture.output(result)
-                    
-                } else
+#    if(input$runCox && input$caseSummaryCox){
+        
+#        desc = resultKM()$tableResult$caseSummary
+        
+#        if(!is.null(desc)){
+#            if(input$factorVarKM){
+#                descs = do.call(rbind.data.frame, desc)
+#
+#            }else{
                 
-                if(input$testType=='2'){
-                  
-                     result <- roystonTest(dataM())
-                       out <- capture.output(result)
-                    
-                } else
-                
-                if(input$testType=='3'){
-                   
-                result <- dhTest(dataM())
-                out <- capture.output(result)
-                    
-                }
-                
-                	write.table(out, file, row.names=F, col.names=F, quote=F)
-             }
-             
-             else if (input$firstLast == 1){  ## Download graphs, first column is group variable.
-                 
-                 
-                 if(input$testType=='0'){
-                     
-                     dataset <- dataM()
-                     dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-                     
-                     subNames = names(dataset.split)
-                     ind.sub = which(names(dataset.split) == input$subset)
-                     
-                     dataset = dataset.split[[ind.sub]]
-                     
-                     result = mardiaTest(dataset, qqplot=FALSE)
-                     
-                     out <- capture.output(result)
-                     
-                 } else
-                 
-                 if(input$testType=='1'){
-                     
-                     dataset <- dataM()
-                     dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-                     
-                     subNames = names(dataset.split)
-                     ind.sub = which(names(dataset.split) == input$subset)
-                     
-                     dataset = dataset.split[[ind.sub]]
-                     
-                     result = hzTest(dataset, qqplot=FALSE)
-                     
-                     out <- capture.output(result)
-                     
-                 } else
-                 
-                 if(input$testType=='2'){
-                     
-                     dataset <- dataM()
-                     dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-                     
-                     subNames = names(dataset.split)
-                     ind.sub = which(names(dataset.split) == input$subset)
-                     
-                     dataset = dataset.split[[ind.sub]]
-                     
-                     result = roystonTest(dataset, qqplot=FALSE)
-                     
-                     out <- capture.output(result)
-                     
-                 } else
-                 
-                 if(input$testType=='3'){
-                     
-                    dataset <- dataM()
-                    dataset.split = split(dataset[,-1], dataset[,1])
-                    result = lapply(dataset.split, function(x)dhTest(x,qqplot=FALSE))
-                    out <- capture.output(result)
-                     
-                 }
-                 
-                 write.table(out, file, row.names=F, col.names=F, quote=F)
-                 
-                 
-             }
-             
-             else if(input$firstLast == 2){  ## Last column is "Group" variable.
-                 
-                 if(input$testType=='0'){
-                     
-                     dataset <- dataM()
-                     ind.last = dim(dataset)[2]
-                     dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                     
-                     subNames = names(dataset.split)
-                     ind.sub = which(names(dataset.split) == input$subset)
-                     dataset = dataset.split[[ind.sub]]
-                     result = mardiaTest(dataset, qqplot=FALSE)
-                     out <- capture.output(result)
-                     
-                 }
-                 
-                 else if(input$testType=='1'){
-                     dataset <- dataM()
-                     ind.last = dim(dataset)[2]
-                     dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                     
-                     subNames = names(dataset.split)
-                     ind.sub = which(names(dataset.split) == input$subset)
-                     dataset = dataset.split[[ind.sub]]
-                     result = hzTest(dataset, qqplot=FALSE)
-                     out <- capture.output(result)
-                    
-                 }
-                 
-                 else if(input$testType=='2'){
-                     dataset <- dataM()
-                     ind.last = dim(dataset)[2]
-                     dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                     
-                     subNames = names(dataset.split)
-                     ind.sub = which(names(dataset.split) == input$subset)
-                     dataset = dataset.split[[ind.sub]]
-                     result = roystonTest(dataset, qqplot=FALSE)
-                     out <- capture.output(result)
-                     
-                 }
-                 
-                 else if(input$testType=='3'){
-                     dataset <- dataM()
-                     ind.last = dim(dataset)[2]
-                     dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                     result = lapply(dataset.split, function(x)dhTest(x,qqplot=FALSE))
-                     out <- capture.output(result)
-                     
-                 }
-                 
-                 write.table(out, file, row.names=F, col.names=F, quote=F)
-             }
-		})
-        ###
+#               descs = desc
+#
+#            }
+#        }else{descs = NULL}
         
-        # display 10 rows initially
-        output$RawData <- renderDataTable(dataM(), options = list(iDisplayLength = 10))
+#        descs
         
-        # display 10 rows initially
-        output$OutlierData <- renderDataTable(
-        
-        
-        if(input$firstLast==0){   ## Single group outlier detection
-            
-            if(input$outlierDetect=='1'){
-                dataset <- dataM()
-                set.seed(1)
-                outlier(dataset, qqplot=FALSE, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)$outlier
-                
-            }else
-            
-            if(input$outlierDetect=='2'){
-                dataset <- dataM()
-                set.seed(1)
-                outlier(dataset, qqplot=FALSE, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)$outlier
-                
-            }else
-            
-            if(input$outlierDetect=='3'){
-                dataset <- dataM()
-                o = outlier(dataset, qqplot=FALSE, method="pcout")$outlier
-                names(o)= c("Observation", "Outlier")
-                o
-                
-            }
-            
-            
-        }
-        
-        else if (input$firstLast == 1){  ## First column is "Group" variable.
-            
-            if(input$outlierDetect=='1'){
-                dataset <- dataM()
-                dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-                quantile = lapply(dataset.split, function(x){set.seed(1)
-                    outlier(x, qqplot=FALSE, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                outlier = list()
-                for(i in 1:length(dataset.split)){
-                    
-                    outlier[i] = quantile[[i]][1]
-                }
-                names(outlier) = names(quantile)
-                o = ldply(outlier, rbind)
-                names(o)[1]="Group"
-                o
-            }
-            
-            else if(input$outlierDetect=='2'){
-                dataset <- dataM()
-                dataset.split = split(dataset[,-1], dataset[,1])
-                adjquan = lapply(dataset.split, function(x){set.seed(1)
-                    outlier(x, qqplot=FALSE, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                outlier = list()
-                for(i in 1:length(dataset.split)){
-                    
-                    outlier[i] = adjquan[[i]][1]
-                }
-                names(outlier) = names(adjquan)
-                o = ldply(outlier, rbind)
-                names(o)[1]="Group"
-                o
-            }
-            
-            else if(input$outlierDetect=='3'){
-                dataset <- dataM()
-                dataset.split = split(dataset[,-1], dataset[,1])
-                out =lapply(dataset.split, function(x){set.seed(1)
-                    outlier(x, qqplot=FALSE, method="pcout")})
-                outlier = list()
-                for(i in 1:length(dataset.split)){
-                    
-                    outlier[i] = out[[i]][1]
-                }
-                names(outlier) = names(out)
-                o = ldply(outlier, rbind)
-                names(o) = c("Group", "Observation", "Outlier")
-                o
-            }
-            
-            
-        }
-        
-        else if(input$firstLast == 2){  ## Last column is "Group" variable.
-            
-            if(input$outlierDetect=='1'){
-                dataset <- dataM()
-                ind.last = dim(dataset)[2]
-                dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                quantile = lapply(dataset.split, function(x){set.seed(1)
-                    outlier(x, qqplot=FALSE, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                outlier = list()
-                for(i in 1:length(dataset.split)){
-                    
-                    outlier[i] = quantile[[i]][1]
-                }
-                names(outlier) = names(quantile)
-                o = ldply(outlier, rbind)
-                names(o)[1]="Group"
-                o
-            }
-            
-            else if(input$outlierDetect=='2'){
-                dataset <- dataM()
-                ind.last = dim(dataset)[2]
-                dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                adjquan = lapply(dataset.split, function(x){set.seed(1)
-                    outlier(x, qqplot=FALSE, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                outlier = list()
-                for(i in 1:length(dataset.split)){
-                    
-                    outlier[i] = adjquan[[i]][1]
-                }
-                names(outlier) = names(adjquan)
-                o = ldply(outlier, rbind)
-                names(o)[1]="Group"
-                o
-                
-            }
-            
-            else if(input$outlierDetect=='3'){
-                dataset <- dataM()
-                ind.last = dim(dataset)[2]
-                dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                out = lapply(dataset.split, function(x)outlier(x, qqplot=FALSE, method="pcout"))
-                outlier = list()
-                for(i in 1:length(dataset.split)){
-                    
-                    outlier[i] = out[[i]][1]
-                }
-                names(outlier) = names(out)
-                o = ldply(outlier, rbind)
-                names(o) = c("Group", "Observation", "Outlier")
-                o
-            }
-            
-            
-        },
-			
-        options = list(iDisplayLength = 10))
-        
-        # display 10 rows initially
-        output$NewData <- renderDataTable(
-        
-        
-        
-        if(input$firstLast==0){   ## Single group outlier detection
-            
-            if(input$outlierDetect=='1'){
-                dataset <- dataM()
-                set.seed(1)
-                outlier(dataset, qqplot=FALSE, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)$newData
-                
-            }else
-            
-            if(input$outlierDetect=='2'){
-                dataset <- dataM()
-                set.seed(1)
-                outlier(dataset, qqplot=FALSE, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)$newData
-                
-            }else
-            
-            if(input$outlierDetect=='3'){
-                dataset <- dataM()
-                outlier(dataset, qqplot=FALSE, method="pcout")$newData
-                
-            }
-            
-            
-        }
-        
-        else if (input$firstLast == 1){  ## First column is "Group" variable.
-            
-            if(input$outlierDetect=='1'){
-                dataset <- dataM()
-                dataset.split = split(dataset[,-1], dataset[,1])   ## Split data through 1st column
-                quantile = lapply(dataset.split, function(x){set.seed(1)
-                    outlier(x, qqplot=FALSE, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                outlier = list()
-                for(i in 1:length(dataset.split)){
-                    
-                    outlier[i] = quantile[[i]][2]
-                }
-                names(outlier) = names(quantile)
-                o = ldply(outlier, rbind)
-                names(o)[1]="Group"
-                o
-            }
-            
-            else if(input$outlierDetect=='2'){
-                dataset <- dataM()
-                dataset.split = split(dataset[,-1], dataset[,1])
-                adjquan = lapply(dataset.split, function(x){set.seed(1)
-                    outlier(x, qqplot=FALSE, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                outlier = list()
-                for(i in 1:length(dataset.split)){
-                    
-                    outlier[i] = adjquan[[i]][2]
-                }
-                names(outlier) = names(adjquan)
-                o = ldply(outlier, rbind)
-                names(o)[1]="Group"
-                o
-            }
-            
-            else if(input$outlierDetect=='3'){
-                dataset <- dataM()
-                dataset.split = split(dataset[,-1], dataset[,1])
-                out =lapply(dataset.split, function(x)outlier(x, qqplot=FALSE, method="pcout"))
-                outlier = list()
-                for(i in 1:length(dataset.split)){
-                    
-                    outlier[i] = out[[i]][2]
-                }
-                names(outlier) = names(out)
-                o = ldply(outlier, rbind)
-                names(o)[1]="Group"
-                o
-            }
-            
-            
-        }
-        
-        else if(input$firstLast == 2){  ## Last column is "Group" variable.
-            
-            if(input$outlierDetect=='1'){
-                dataset <- dataM()
-                ind.last = dim(dataset)[2]
-                dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                quantile = lapply(dataset.split, function(x){set.seed(1)
-                    outlier(x, qqplot=FALSE, method="quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                outlier = list()
-                for(i in 1:length(dataset.split)){
-                    
-                    outlier[i] = quantile[[i]][2]
-                }
-                names(outlier) = names(quantile)
-                o = ldply(outlier, rbind)
-                names(o)[1]="Group"
-                o
-            }
-            
-            else if(input$outlierDetect=='2'){
-                dataset <- dataM()
-                ind.last = dim(dataset)[2]
-                dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                adjquan = lapply(dataset.split, function(x){set.seed(1)
-                    outlier(x, qqplot=FALSE, method="adj.quan", alpha = input$alphaVal, tol = input$tol, label = input$label, position = input$position, offset = input$offset)})
-                outlier = list()
-                for(i in 1:length(dataset.split)){
-                    
-                    outlier[i] = adjquan[[i]][2]
-                }
-                names(outlier) = names(adjquan)
-                o = ldply(outlier, rbind)
-                names(o)[1]="Group"
-                o
-                
-            }
-            
-            else if(input$outlierDetect=='3'){
-                dataset <- dataM()
-                ind.last = dim(dataset)[2]
-                dataset.split = split(dataset[,-ind.last], dataset[,ind.last])
-                out = lapply(dataset.split, function(x){set.seed(1)
-                    outlier(x, qqplot=FALSE, method="pcout")})
-                outlier = list()
-                for(i in 1:length(dataset.split)){
-                    
-                    outlier[i] = out[[i]][2]
-                }
-                names(outlier) = names(out)
-                o = ldply(outlier, rbind)
-                names(o)[1]="Group"
-                o
-            }
-            
-            
-        },
-			
-        options = list(iDisplayLength = 10))
-        
-        output$cite <- renderPrint(
-        
-        citation("MVN")
-        
-        )
-        
- 
-}
+#    }else{descs = NULL}
+    
+    
+    
+#})
 
-)
+
+#output$descriptivesKM <- DT::renderDataTable({
+    
+#    datatable(descriptivesReactiveKM(), extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+#    dom = 'Bfrtip',
+#    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+#    ))
+    
+#})
+
+
+displayCoefficientEstimatesReactive <- reactive({
+    
+    if(input$runCox && input$displayCoefficientEstimates){
+    
+        coeffResults = resultCox()$testResult$displayCoefficientEstimatesResults
+        
+       }else{coeffResults = NULL}
+    
+    #coeffResults
+    
+})
+
+
+
+output$displayCoefficientEstimatesResult <- DT::renderDataTable({
+    
+    datatable(displayCoefficientEstimatesReactive(), rownames = FALSE, extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+
+
+
+
+hazardRatioReactiveCox <- reactive({
+    
+    if(input$runCox && input$hrcox){
+        
+        hrResult = resultCox()$testResult$hazardRatioResults
+        
+
+    }else{hrResults = NULL}
+  
+  # hrResult
+  
+})
+
+
+output$hazardRatioResultCox <- DT::renderDataTable({
+    
+    datatable(hazardRatioReactiveCox(), rownames= FALSE, extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+
+goodnessOfFitTestsResultsReactiveCox <- reactive({
+    
+    if(input$runCox && input$goodnessOfFitTests){
+        
+            gof = resultCox()$testResult$goodnessOfFitTestsResults
+            
+    }else{gof = NULL}
+    
+    gof
+})
+
+output$goodnessOfFitTestsRes <- DT::renderDataTable({
+    
+    datatable(goodnessOfFitTestsResultsReactiveCox(), rownames=FALSE, extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+
+analysisOfDevianceResultsReactiveCox <- reactive({
+    
+    if(input$runCox && input$analysisOfDeviance){
+    
+        aod = resultCox()$testResult$analysisOfDevianceResults
+    
+    }else{aod = NULL}
+    
+    aod
+})
+
+output$analysisOfDevianceRes <- DT::renderDataTable({
+    
+    datatable(analysisOfDevianceResultsReactiveCox(), rownames=FALSE, extensions = c('Buttons','KeyTable', 'Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+predictionsReactiveCox <- reactive({
+    
+    if(input$runCox && input$storePredictions){
+    
+        preds = resultCox()$testResult$Store$Predictions
+    
+    }else{preds = NULL}
+    
+    preds
+})
+
+output$predictionsCox <- DT::renderDataTable({
+    
+    datatable(predictionsReactiveCox(), extensions = c('Buttons','KeyTable','Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+
+residualsReactiveCox <- reactive({
+    
+    if(input$runCox && input$residuals){
+        
+        residuals = resultCox()$testResult$Store$Residuals
+    
+    }else{residuals = NULL}
+    
+    residuals
+})
+
+output$residualsCox <- DT::renderDataTable({
+    
+    datatable(residualsReactiveCox(), extensions = c('Buttons','KeyTable','Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+martingaleResidualsReactiveCox <- reactive({
+    
+    if(input$runCox && input$martingaleResiduals){
+        
+        martingale = resultCox()$testResult$Store$MartingaleResiduals
+    
+    }else{martingale = NULL}
+    
+    martingale
+})
+
+output$martingaleResidualsCox <- DT::renderDataTable({
+    
+    datatable(martingaleResidualsReactiveCox(), extensions = c('Buttons','KeyTable','Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+schoenfeldResidualsReactiveCox <- reactive({
+    
+    if(input$runCox && input$schoenfeldResiduals){
+        
+        schoenfeld = resultCox()$testResult$Store$SchoenfeldResiduals
+    
+    }else{schoenfeld = NULL}
+    
+    schoenfeld
+})
+
+output$schoenfeldResidualsCox <- DT::renderDataTable({
+    
+    datatable(schoenfeldResidualsReactiveCox(), extensions = c('Buttons','KeyTable','Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+
+
+dfBetasReactiveCox <- reactive({
+    
+    if(input$runCox && input$dfBetas){
+    
+            dfbetas = resultCox()$testResult$Store$DfBetas
+        
+    }else{dfbetas = NULL}
+    
+    dfbetas
+})
+
+output$dfBetasCox <- DT::renderDataTable({
+    
+    datatable(dfBetasReactiveCox(), extensions = c('Buttons','KeyTable','Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+
+
+
+phAssumptionReactiveCox <- reactive({
+    
+    if(input$runCox){
+        
+        ph = resultCox()$testResult$displayCoxPh
+        
+    }else{ph = NULL}
+    
+    ph
+})
+
+output$phAssumptionCox <- DT::renderDataTable({
+    
+    datatable(phAssumptionReactiveCox(), extensions = c('Buttons','KeyTable','Responsive'), options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print'), keys = TRUE
+    ))
+    
+})
+
+
+output$phPlot <- renderPlot({
+    
+    #if(input$runCox){
+        # n_row = nrow(resultCox()$testResult$displayCoxPh)
+    
+        #par(mfrow=c(n_row, 1))
+        #  lapply(dataset.split, function(x)dhTest(x, qqplot=TRUE))
+    
+        resultCox()$plotResult
+    #}
+})
+
+
+###################### Cox Regression (end) ###################################################
+
+ output$str <- renderPrint({
+     
+     dim(resultCox()$testResult$displayCoxPh)[1]*100
+
+ })
+ 
+ 
+ 
+})
 
 
 
